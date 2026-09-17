@@ -21,6 +21,12 @@ use crate::websocket::{self, WsState};
 // CMD-01 — Timer commands
 // ---------------------------------------------------------------------------
 
+/// Keep a taskbar recovery path if a platform could not create the mini-mode tray.
+#[tauri::command]
+pub fn window_mini_taskbar_ready(tray_state: State<'_, Arc<TrayState>>) -> bool {
+    tray_state.icon.lock().map(|icon| icon.is_some()).unwrap_or(false)
+}
+
 /// Toggle the timer: start if idle, resume if paused, pause if running.
 /// This is the primary action bound to the space bar and the play/pause button.
 #[tauri::command]
@@ -177,8 +183,8 @@ pub fn settings_set(
     // The tray exists when either flag is true.
     // On Linux, spawn tray creation on a background thread to avoid blocking
     // the main thread on KDE Plasma 6 / Wayland (D-Bus StatusNotifier hang).
-    if matches!(key.as_str(), "tray_icon_enabled" | "min_to_tray") {
-        if new_settings.tray_icon_enabled || new_settings.min_to_tray {
+    if matches!(key.as_str(), "tray_icon_enabled" | "min_to_tray" | "mini_mode") {
+        if new_settings.tray_icon_enabled || new_settings.min_to_tray || new_settings.mini_mode {
             #[cfg(target_os = "linux")]
             {
                 let app_handle = app.clone();
@@ -252,6 +258,9 @@ pub fn settings_reset_defaults(
 
     timer.apply_settings(new_settings.clone());
     *tray_state.countdown_mode.lock().unwrap() = new_settings.dial_countdown;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.set_always_on_top(false);
+    }
 
     // Broadcast a reset snapshot so the frontend dial and display reflect the
     // restored default durations without requiring the user to manually reset.

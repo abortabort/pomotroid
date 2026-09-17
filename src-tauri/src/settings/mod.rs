@@ -13,6 +13,7 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
     pub always_on_top: bool,
+    pub mini_mode: bool,
     pub break_always_on_top: bool,
     pub auto_start_work: bool,
     pub auto_start_break: bool,
@@ -71,6 +72,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             always_on_top: false,
+            mini_mode: false,
             break_always_on_top: false,
             auto_start_work: true,
             auto_start_break: true,
@@ -134,6 +136,11 @@ impl Default for Settings {
 /// Shortcut defaults are platform-specific and seeded before the common
 /// defaults so that INSERT OR IGNORE lets them win on first launch.
 pub fn seed_defaults(conn: &Connection) -> Result<()> {
+    // Preserve the old topmost overlay on upgrade, without coupling future changes.
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) SELECT 'mini_mode', value FROM settings WHERE key = 'always_on_top'",
+        [],
+    )?;
     // Platform-specific shortcut defaults (seeded first so they win).
     #[cfg(target_os = "macos")]
     let shortcut_defaults: &[(&str, &str)] = &[
@@ -180,6 +187,7 @@ pub fn load(conn: &Connection) -> Result<Settings> {
     let d = Settings::default();
     Ok(Settings {
         always_on_top: parse_bool(&map, "always_on_top", d.always_on_top),
+        mini_mode: parse_bool(&map, "mini_mode", d.mini_mode),
         break_always_on_top: parse_bool(&map, "break_always_on_top", d.break_always_on_top),
         auto_start_work: parse_bool(&map, "auto_start_work", d.auto_start_work),
         auto_start_break: parse_bool(&map, "auto_start_break", d.auto_start_break),
@@ -353,6 +361,34 @@ mod tests {
         seed_defaults(&conn).unwrap();
         let s = load(&conn).unwrap();
         assert!(s.always_on_top, "seed_defaults must not overwrite saved value");
+    }
+
+    #[test]
+    fn migrate_legacy_overlay_without_recoupling_modes() {
+        let conn = setup();
+        save_setting(&conn, "always_on_top", "true").unwrap();
+        seed_defaults(&conn).unwrap();
+        assert!(load(&conn).unwrap().mini_mode);
+        save_setting(&conn, "mini_mode", "false").unwrap();
+        seed_defaults(&conn).unwrap();
+        let s = load(&conn).unwrap();
+        assert!(s.always_on_top);
+        assert!(!s.mini_mode, "restoring the main window must survive restart");
+    }
+
+    #[test]
+    fn mini_mode_and_topmost_are_independent() {
+        let conn = setup();
+        seed_defaults(&conn).unwrap();
+        save_setting(&conn, "mini_mode", "true").unwrap();
+        let s = load(&conn).unwrap();
+        assert!(s.mini_mode);
+        assert!(!s.always_on_top);
+        save_setting(&conn, "mini_mode", "false").unwrap();
+        save_setting(&conn, "always_on_top", "true").unwrap();
+        let s = load(&conn).unwrap();
+        assert!(!s.mini_mode);
+        assert!(s.always_on_top);
     }
 
     #[test]

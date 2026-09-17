@@ -1,9 +1,16 @@
 <script lang="ts">
   import '../app.css';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import Titlebar from '$lib/components/Titlebar.svelte';
   import Timer from '$lib/components/Timer.svelte';
-  import { getSettings, getThemes, onSettingsChanged, onThemesChanged } from '$lib/ipc';
+  import {
+    getSettings,
+    getThemes,
+    onSettingsChanged,
+    onThemesChanged,
+    setSetting,
+    miniTaskbarReady,
+  } from '$lib/ipc';
   import { settings } from '$lib/stores/settings';
   import { applyTheme } from '$lib/stores/theme';
   import { resolveThemeName } from '$lib/utils/theme';
@@ -11,10 +18,11 @@
   import { setLocale } from '$lib/locale.svelte.js';
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import type { UnlistenFn } from '@tauri-apps/api/event';
+  import { listen } from '@tauri-apps/api/event';
   import { info, error as logError } from '@tauri-apps/plugin-log';
   import { createLocalShortcutHandler } from '$lib/utils/localShortcuts';
   import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
-  import { currentMonitor } from '@tauri-apps/api/window';
+  import { currentMonitor, availableMonitors } from '@tauri-apps/api/window';
 
   // Local shortcut state — volume and fullscreen tracked separately so the
   // handler can read current values without waiting for settings:changed round-trip.
@@ -34,8 +42,11 @@
 
   let uiScale = $state(1.0);
   let isCompact = $state(false);
-  let normalWindowSize = $state<{ width: number; height: number } | null>(null);
-  let appliedTopMode = $state(false);
+  let appliedMiniMode: boolean | null = null;
+  let requestedMiniMode: boolean | null = null;
+  let changingMode = true;
+  let geometryTimer: ReturnType<typeof setTimeout> | undefined;
+  let geometryRevision = 0;
   let settingsLoaded = $state(false);
   let snapping = false;
   let windowModeUpdates: Promise<void> = Promise.resolve();
@@ -44,6 +55,85 @@
   const TOP_MODE_W = 160;
   const TOP_MODE_H = 30;
   const NORMAL_SIZE_KEY = 'pomotroid-normal-window-size';
+  const NORMAL_GEOMETRY_KEY = 'pomotroid-normal-window-geometry';
+  const MINI_GEOMETRY_KEY = 'pomotroid-mini-window-geometry';
+  type Geometry = { x: number; y: number; width: number; height: number };
+
+  function readGeometry(mini: boolean): Geometry | null {
+    try {
+      const value = JSON.parse(
+        localStorage.getItem(mini ? MINI_GEOMETRY_KEY : NORMAL_GEOMETRY_KEY) ?? 'null'
+      );
+      if (
+        value &&
+        [value.x, value.y, value.width, value.height].every(Number.isFinite) &&
+        value.width >= TOP_MODE_W &&
+        value.height >= TOP_MODE_H
+      )
+        return value;
+    } catch {
+      /* Ignore invalid saved geometry. */
+    }
+    return null;
+  }
+
+  async function saveGeometry(mini: boolean, duringTransition = false) {
+    const revision = geometryRevision;
+    const win = getCurrentWebviewWindow();
+    if ((await win.isMaximized()) || (await win.isFullscreen())) return;
+    const position = await win.outerPosition();
+    const size = (await win.innerSize()).toLogical(await win.scaleFactor());
+    if (
+      !duringTransition &&
+      (changingMode || revision !== geometryRevision || appliedMiniMode !== mini)
+    )
+      return;
+    if (!mini && size.width <= TOP_MODE_W && size.height <= TOP_MODE_H) return;
+    localStorage.setItem(
+      mini ? MINI_GEOMETRY_KEY : NORMAL_GEOMETRY_KEY,
+      JSON.stringify({ x: position.x, y: position.y, width: size.width, height: size.height })
+    );
+  }
+
+  function scheduleGeometrySave() {
+    if (changingMode || appliedMiniMode === null) return;
+    clearTimeout(geometryTimer);
+    const mode = appliedMiniMode;
+    geometryTimer = setTimeout(() => {
+      if (!changingMode && appliedMiniMode === mode) {
+        void saveGeometry(mode).catch((e) => logError(`[main] geometry save failed: ${String(e)}`));
+      }
+    }, 200);
+  }
+
+  async function restorePosition(geometry: Geometry) {
+    const win = getCurrentWebviewWindow();
+    const monitors = await availableMonitors();
+    const size = await win.outerSize();
+    const monitor =
+      monitors.find((m) => {
+        const a = m.workArea;
+        return (
+          geometry.x < a.position.x + a.size.width &&
+          geometry.x + size.width > a.position.x &&
+          geometry.y < a.position.y + a.size.height &&
+          geometry.y + size.height > a.position.y
+        );
+      }) ??
+      (await currentMonitor()) ??
+      monitors[0];
+    if (!monitor) return;
+    const area = monitor.workArea;
+    const x = Math.max(
+      area.position.x,
+      Math.min(geometry.x, area.position.x + Math.max(0, area.size.width - size.width))
+    );
+    const y = Math.max(
+      area.position.y,
+      Math.min(geometry.y, area.position.y + Math.max(0, area.size.height - size.height))
+    );
+    await win.setPosition(new PhysicalPosition(x, y));
+  }
 
   // Extra bottom padding added to <main> in compact mode.  Shifts the
   // dial upward so the whitespace sits at the bottom rather than being
@@ -54,9 +144,6 @@
     function update() {
       const w = window.innerWidth;
       const h = window.innerHeight;
-      if (settingsLoaded && !$settings.always_on_top && !appliedTopMode && w > TOP_MODE_W && h > TOP_MODE_H) {
-        localStorage.setItem(NORMAL_SIZE_KEY, JSON.stringify({ width: w, height: h }));
-      }
       isCompact = w < COMPACT_THRESHOLD || h < COMPACT_THRESHOLD;
       if (isCompact) {
         // Scale so the dial fills the available space, reserving
@@ -73,53 +160,84 @@
     return () => window.removeEventListener('resize', update);
   });
 
-  // Keep the always-on-top view compact without losing the user's normal size.
+  // Window shape is independent of its always-on-top flag.
   $effect(() => {
     if (!settingsLoaded) return;
-    const topMode = $settings.always_on_top;
+    const mini = $settings.mini_mode;
+    if (requestedMiniMode === mini) return;
+    requestedMiniMode = mini;
     const win = getCurrentWebviewWindow();
-    let requestedSize: { width: number; height: number };
-
-    if (topMode && !appliedTopMode) {
-      try {
-        const saved = JSON.parse(localStorage.getItem(NORMAL_SIZE_KEY) ?? 'null');
-        if (saved?.width > TOP_MODE_W && saved?.height > TOP_MODE_H) {
-          normalWindowSize = { width: saved.width, height: saved.height };
+    windowModeUpdates = windowModeUpdates
+      .then(async () => {
+        changingMode = true;
+        geometryRevision++;
+        clearTimeout(geometryTimer);
+        if (appliedMiniMode !== null) await saveGeometry(appliedMiniMode, true);
+        const saved = readGeometry(mini);
+        const current = (await win.innerSize()).toLogical(await win.scaleFactor());
+        if (
+          appliedMiniMode === null &&
+          mini &&
+          !readGeometry(false) &&
+          current.width > TOP_MODE_W &&
+          current.height > TOP_MODE_H
+        ) {
+          await saveGeometry(false, true);
         }
-      } catch {
-        // Fall back to the current size when no valid normal size is saved.
-      }
-      normalWindowSize ??= { width: 360, height: 478 };
-      appliedTopMode = true;
-      requestedSize = { width: TOP_MODE_W, height: TOP_MODE_H };
-    } else if (!topMode && appliedTopMode) {
-      appliedTopMode = false;
-      requestedSize = normalWindowSize ?? { width: BASE_W, height: BASE_H };
-      normalWindowSize = null;
-    } else {
-      return;
-    }
-
-    // Serialize native operations so rapid mode switches cannot restore an old size.
-    windowModeUpdates = windowModeUpdates.then(async () => {
-      if (topMode) {
+        let normalSize = { width: BASE_W, height: BASE_H };
+        try {
+          const old = JSON.parse(localStorage.getItem(NORMAL_SIZE_KEY) ?? 'null');
+          if (old?.width > TOP_MODE_W && old?.height > TOP_MODE_H) normalSize = old;
+        } catch {
+          /* Use the default normal size. */
+        }
+        if (appliedMiniMode === null && current.width > TOP_MODE_W && current.height > TOP_MODE_H) {
+          normalSize = current;
+        }
+        const size = mini ? { width: TOP_MODE_W, height: TOP_MODE_H } : (saved ?? normalSize);
+        // Keep a recovery entry while native operations are in progress or fail.
+        await win.setSkipTaskbar(false);
         await win.setFullscreen(false);
+        isFullscreen = false;
         if (await win.isMaximized()) await win.unmaximize();
-      }
-      await win.setSize(new LogicalSize(requestedSize.width, requestedSize.height));
-      await win.setResizable(!topMode);
-      await win.setSkipTaskbar(topMode);
-      const actual = (await win.innerSize()).toLogical(await win.scaleFactor());
-      await info(`[main] window mode=${topMode ? 'overlay' : 'normal'} requested=${requestedSize.width}x${requestedSize.height} actual=${actual.width}x${actual.height}`);
-      if (Math.abs(actual.width - requestedSize.width) > 1 || Math.abs(actual.height - requestedSize.height) > 1) {
-        await logError(`[main] window size mismatch: requested=${requestedSize.width}x${requestedSize.height} actual=${actual.width}x${actual.height}`);
-      }
-    }).catch(async (e) => {
-      await logError(`[main] failed to apply window mode: ${String(e)}`);
-    });
+        await win.setMaxSize(null);
+        await win.setMinSize(new LogicalSize(TOP_MODE_W, TOP_MODE_H));
+        await win.setSize(new LogicalSize(size.width, size.height));
+        if (mini) {
+          await win.setMaxSize(new LogicalSize(TOP_MODE_W, TOP_MODE_H));
+        }
+        await win.setResizable(!mini);
+        await win.setMaximizable(!mini);
+        await win.setSkipTaskbar(mini && (await miniTaskbarReady()));
+        if (saved) await restorePosition(saved);
+        else
+          await restorePosition({
+            x: (await win.outerPosition()).x,
+            y: (await win.outerPosition()).y,
+            ...size,
+          });
+        appliedMiniMode = mini;
+        await saveGeometry(mini, true);
+        const actual = (await win.innerSize()).toLogical(await win.scaleFactor());
+        await info(
+          `[main] window mode=${mini ? 'mini' : 'normal'} requested=${size.width}x${size.height} actual=${actual.width}x${actual.height}`
+        );
+        if (Math.abs(actual.width - size.width) > 1 || Math.abs(actual.height - size.height) > 1) {
+          await logError(
+            `[main] window size mismatch: requested=${size.width}x${size.height} actual=${actual.width}x${actual.height}`
+          );
+        }
+      })
+      .catch(async (e) => {
+        await logError(`[main] failed to apply window mode: ${String(e)}`);
+      })
+      .finally(() => {
+        changingMode = false;
+      });
   });
 
   async function startResize(direction: string) {
+    if ($settings.mini_mode) return;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await getCurrentWebviewWindow().startResizeDragging(direction as any);
   }
@@ -150,26 +268,35 @@
     (async () => {
       // Magnetically attach the fixed-size overlay to the nearest monitor edge.
       cleanups.push(
+        await listen('window:restore-main', () => {
+          if ($settings.mini_mode)
+            void setSetting('mini_mode', 'false').catch((e) => logError(String(e)));
+        }),
+        await win.onResized(() => scheduleGeometrySave()),
         await win.onMoved(async ({ payload: position }) => {
-          if (!$settings.always_on_top || snapping) return;
+          scheduleGeometrySave();
+          if (!$settings.mini_mode || changingMode || snapping) return;
+          const revision = geometryRevision;
           const monitor = await currentMonitor();
           if (!monitor) return;
 
           const size = await win.outerSize();
-          const threshold = 16;
+          const threshold = 12 * monitor.scaleFactor;
           const right = position.x + size.width;
           const bottom = position.y + size.height;
-          const monitorRight = monitor.position.x + monitor.size.width;
-          const monitorBottom = monitor.position.y + monitor.size.height;
+          const area = monitor.workArea;
+          const monitorRight = area.position.x + area.size.width;
+          const monitorBottom = area.position.y + area.size.height;
           let x = position.x;
           let y = position.y;
 
-          if (Math.abs(position.x - monitor.position.x) <= threshold) x = monitor.position.x;
+          if (Math.abs(position.x - area.position.x) <= threshold) x = area.position.x;
           else if (Math.abs(right - monitorRight) <= threshold) x = monitorRight - size.width;
-          if (Math.abs(position.y - monitor.position.y) <= threshold) y = monitor.position.y;
+          if (Math.abs(position.y - area.position.y) <= threshold) y = area.position.y;
           else if (Math.abs(bottom - monitorBottom) <= threshold) y = monitorBottom - size.height;
 
           if (x !== position.x || y !== position.y) {
+            if (changingMode || revision !== geometryRevision || !$settings.mini_mode) return;
             snapping = true;
             await win.setPosition(new PhysicalPosition(x, y));
             setTimeout(() => {
@@ -184,6 +311,8 @@
         const s = await getSettings();
         settings.set(s);
         settingsLoaded = true;
+        await tick();
+        await windowModeUpdates;
         localVolume = s.volume;
 
         // Apply the stored locale on mount.
@@ -247,6 +376,7 @@
     })();
 
     return () => {
+      clearTimeout(geometryTimer);
       for (const fn of cleanups) fn();
     };
   });
@@ -254,7 +384,7 @@
 
 <!-- Resize handles — invisible edge/corner strips for decorations-free windows.
      Not needed on macOS where native resizing is provided by decorations:true. -->
-{#if !isMac}
+{#if !isMac && !$settings.mini_mode}
   <!-- N -->
   <div class="rh rh-n" onmousedown={() => startResize('North')} role="none"></div>
   <!-- S -->
@@ -273,12 +403,12 @@
   <div class="rh rh-sw" onmousedown={() => startResize('SouthWest')} role="none"></div>
 {/if}
 
-<div class="app" class:top-mode={$settings.always_on_top}>
-  {#if !$settings.always_on_top}
+<div class="app" class:top-mode={$settings.mini_mode}>
+  {#if !$settings.mini_mode}
     <Titlebar />
   {/if}
   <main class:compact={isCompact}>
-    <Timer {isCompact} {uiScale} overlay={$settings.always_on_top} />
+    <Timer {isCompact} {uiScale} overlay={$settings.mini_mode} />
   </main>
 </div>
 

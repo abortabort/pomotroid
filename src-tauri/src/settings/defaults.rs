@@ -6,6 +6,7 @@
 /// Volume is stored on a **0–100** integer scale; converted to 0.0–1.0 on load.
 pub const DEFAULTS: &[(&str, &str)] = &[
     ("always_on_top", "false"),
+    ("mini_mode", "false"),
     ("break_always_on_top", "false"),
     ("auto_start_work", "true"),
     ("auto_start_break", "true"),

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow';
-  import { setWindowVisibility } from '$lib/ipc';
+  import { setWindowVisibility, setSetting } from '$lib/ipc';
   import { settings } from '$lib/stores/settings';
   import { isMac } from '$lib/utils/platform';
   import Tooltip from './Tooltip.svelte';
@@ -188,6 +188,17 @@
 
   <!-- Right: settings + stats buttons on macOS, window controls on Linux/Windows. -->
   <div class="controls">
+    <button
+      class="btn-icon"
+      title="切换到迷你窗口"
+      aria-label="切换到迷你窗口"
+      onclick={() => void setSetting('mini_mode', 'true')}
+    >
+      <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+        <rect x="1" y="1" width="10" height="10" rx="1" stroke="currentColor" />
+        <rect x="5" y="7" width="5" height="3" rx="0.5" fill="currentColor" />
+      </svg>
+    </button>
     {#if isMac}
       {@render statsBtn()}
       {@render settingsBtn()}
@@ -246,11 +257,7 @@
           </svg>
         {/if}
       </button>
-      <button
-        class="btn-icon close"
-        onclick={close}
-        aria-label="Close"
-      >
+      <button class="btn-icon close" onclick={close} aria-label="Close">
         <svg width="12" height="12" viewBox="0 0 12 12">
           <line
             x1="1"
@@ -327,5 +334,18 @@
   .titlebar:not(.suppress-hover) .btn-icon.close:hover {
     color: var(--color-background);
     background: var(--color-focus-round);
+  }
+
+  @media (max-width: 210px) {
+    .titlebar {
+      padding: 0 4px;
+    }
+    .controls {
+      gap: 0;
+    }
+    .btn-icon {
+      width: 22px;
+      flex-shrink: 0;
+    }
   }
 </style>

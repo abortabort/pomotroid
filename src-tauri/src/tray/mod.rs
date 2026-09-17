@@ -22,7 +22,7 @@ use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager,
+    AppHandle, Emitter, Manager,
 };
 
 use crate::timer::TimerController;
@@ -250,11 +250,15 @@ pub fn create_tray(app: &AppHandle, state: &Arc<TrayState>) {
         Ok(i) => i,
         Err(e) => { log::warn!("[tray] menu item error: {e}"); return; }
     };
+    let restore_item = match MenuItem::with_id(app, "restore-main", "恢复主窗口", true, None::<&str>) {
+        Ok(i) => i,
+        Err(e) => { log::warn!("[tray] menu item error: {e}"); return; }
+    };
     let exit_item = match MenuItem::with_id(app, "exit", "Exit", true, None::<&str>) {
         Ok(i) => i,
         Err(e) => { log::warn!("[tray] menu item error: {e}"); return; }
     };
-    let menu = match Menu::with_items(app, &[&toggle_item, &skip_item, &reset_item, &sep, &show_item, &exit_item]) {
+    let menu = match Menu::with_items(app, &[&toggle_item, &skip_item, &reset_item, &sep, &show_item, &restore_item, &exit_item]) {
         Ok(m) => m,
         Err(e) => { log::warn!("[tray] menu error: {e}"); return; }
     };
@@ -317,7 +321,10 @@ pub fn create_tray(app: &AppHandle, state: &Arc<TrayState>) {
                         timer.restart_round();
                     }
                 }
-                "show" => {
+                "show" | "restore-main" => {
+                    if event.id().as_ref() == "restore-main" {
+                        app.emit("window:restore-main", ()).ok();
+                    }
                     log::info!("[tray] show");
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();

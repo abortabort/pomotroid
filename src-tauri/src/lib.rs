@@ -30,7 +30,7 @@ use commands::{
     stats_get_detailed, stats_get_heatmap,
     themes_list,
     timer_get_state, timer_reset, timer_restart_round, timer_skip, timer_toggle,
-    window_set_visibility, app_exit,
+    window_set_visibility, app_exit, window_mini_taskbar_ready,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -146,7 +146,7 @@ pub fn run() {
             // StatusNotifierWatcher D-Bus service to respond.  Spawning on a
             // background thread lets setup() return so the event loop starts
             // and the window can appear while the tray registers asynchronously.
-            if initial_settings.tray_icon_enabled || initial_settings.min_to_tray {
+            if initial_settings.tray_icon_enabled || initial_settings.min_to_tray || initial_settings.mini_mode {
                 #[cfg(target_os = "linux")]
                 {
                     let app_handle = app.handle().clone();
@@ -344,12 +344,14 @@ pub fn run() {
                     }
                     tauri::WindowEvent::Moved(pos) => {
                         if let Ok(conn) = db_for_pos.lock() {
+                            if settings::load(&conn).map(|s| s.mini_mode).unwrap_or(false) { return; }
                             let _ = settings::save_setting(&conn, "window_x", &pos.x.to_string());
                             let _ = settings::save_setting(&conn, "window_y", &pos.y.to_string());
                         }
                     }
                     tauri::WindowEvent::Resized(size) => {
                         if let Ok(conn) = db_for_pos.lock() {
+                            if settings::load(&conn).map(|s| s.mini_mode).unwrap_or(false) { return; }
                             let _ = settings::save_setting(&conn, "window_width", &size.width.to_string());
                             let _ = settings::save_setting(&conn, "window_height", &size.height.to_string());
                             // Also capture position, since some window managers shift the
@@ -386,6 +388,7 @@ pub fn run() {
             stats_get_heatmap,
             // Window
             window_set_visibility,
+            window_mini_taskbar_ready,
             app_exit,
             // Shortcuts
             shortcuts_reload,

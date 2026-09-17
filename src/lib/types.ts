@@ -31,6 +31,7 @@ export interface Settings {
   min_to_tray_on_close: boolean;
   notifications_enabled: boolean;
   always_on_top: boolean;
+  mini_mode: boolean;
   break_always_on_top: boolean;
   volume: number; // 0.0–1.0
   tick_sounds_during_work: boolean;

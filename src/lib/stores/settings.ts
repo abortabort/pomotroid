@@ -18,6 +18,7 @@ const defaults: Settings = {
   min_to_tray_on_close: false,
   notifications_enabled: false,
   always_on_top: false,
+  mini_mode: false,
   break_always_on_top: false,
   volume: 1.0,
   tick_sounds_during_work: false,

@@ -45,6 +45,7 @@ export const notificationShow = (title: string, body: string) =>
 export const setWindowVisibility = (visible: boolean) =>
   invoke<void>('window_set_visibility', { visible });
 export const appExit = () => invoke<void>('app_exit');
+export const miniTaskbarReady = () => invoke<boolean>('window_mini_taskbar_ready');
 
 // --- Audio commands ---
 

@@ -25,7 +25,8 @@
   import * as m from '$paraglide/messages.js';
   import { notificationShow, appExit, setSetting } from '$lib/ipc';
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-  import { Menu, MenuItem } from '@tauri-apps/api/menu';
+  import { Menu, MenuItem, CheckMenuItem, Submenu, PredefinedMenuItem } from '@tauri-apps/api/menu';
+  import { error as logError } from '@tauri-apps/plugin-log';
   import { LogicalPosition } from '@tauri-apps/api/dpi';
 
   interface Props {
@@ -39,6 +40,8 @@
   let timerSnapshot = $derived($timerState);
   let overlayOpacity = $state(45);
   let overlayPositionLocked = $state(false);
+  let pendingDrag: { x: number; y: number; pointer: number; element: HTMLElement } | null = null;
+  let lastDragAt = -Infinity;
 
   function roundColor(rt: string): string {
     if (rt === 'work') return 'var(--color-focus-round)';
@@ -52,46 +55,105 @@
     return m.round_label_long_break();
   }
 
-  function startOverlayDrag(event: MouseEvent) {
+  function startOverlayDrag(event: PointerEvent) {
     const target = event.target;
     if (
+      event.button !== 0 ||
+      event.detail > 1 ||
       overlayPositionLocked ||
       (target instanceof Element && target.closest('button'))
-    ) return;
-    void getCurrentWebviewWindow().startDragging();
+    )
+      return;
+    const element = event.currentTarget as HTMLElement;
+    pendingDrag = { x: event.clientX, y: event.clientY, pointer: event.pointerId, element };
+    element.setPointerCapture(event.pointerId);
+  }
+
+  function cancelOverlayDrag() {
+    if (pendingDrag?.element.hasPointerCapture(pendingDrag.pointer)) {
+      pendingDrag.element.releasePointerCapture(pendingDrag.pointer);
+    }
+    pendingDrag = null;
+  }
+
+  function moveOverlayDrag(event: PointerEvent) {
+    if (!pendingDrag || event.pointerId !== pendingDrag.pointer) return;
+    if (!(event.buttons & 1) || overlayPositionLocked || !overlay) {
+      cancelOverlayDrag();
+      return;
+    }
+    if (Math.hypot(event.clientX - pendingDrag.x, event.clientY - pendingDrag.y) < 4) return;
+    cancelOverlayDrag();
+    lastDragAt = performance.now();
+    void getCurrentWebviewWindow()
+      .startDragging()
+      .catch((e) => logError(`[mini] drag failed: ${String(e)}`));
+  }
+
+  function handleOverlayDoubleClick(event: MouseEvent) {
+    if (
+      event.button !== 0 ||
+      performance.now() - lastDragAt < 400 ||
+      (event.target instanceof Element && event.target.closest('button'))
+    )
+      return;
+    restoreFullWindow();
   }
 
   async function openOverlayMenu(event: MouseEvent) {
     event.preventDefault();
+    cancelOverlayDrag();
     const menu = await Menu.new({
       items: [
-        await MenuItem.new({ text: '重置', action: () => timerRestartRound() }),
-        await MenuItem.new({
-          text: `透明度：${overlayOpacity}%`,
-          action: () => cycleOverlayOpacity(),
+        await MenuItem.new({ text: '重置当前轮次', action: () => timerRestartRound() }),
+        await PredefinedMenuItem.new({ item: 'Separator' }),
+        await CheckMenuItem.new({
+          text: '窗口置顶',
+          checked: $settings.always_on_top,
+          action: () =>
+            void setSetting('always_on_top', String(!$settings.always_on_top)).catch((e) =>
+              logError(String(e))
+            ),
         }),
-        await MenuItem.new({
-          text: overlayPositionLocked ? '解锁位置' : '锁定位置',
+        await Submenu.new({
+          text: '背景透明度',
+          items: await Promise.all(
+            [25, 40, 55, 70].map((transparency) =>
+              CheckMenuItem.new({
+                text: `${transparency}%`,
+                checked: overlayOpacity === 100 - transparency,
+                action: () => setOverlayOpacity(100 - transparency),
+              })
+            )
+          ),
+        }),
+        await CheckMenuItem.new({
+          text: '锁定位置',
+          checked: overlayPositionLocked,
           action: () => toggleOverlayPositionLock(),
         }),
+        await PredefinedMenuItem.new({ item: 'Separator' }),
         await MenuItem.new({
-          text: '显示完整窗口',
-          action: () => void setSetting('always_on_top', 'false'),
+          text: '恢复主窗口',
+          action: restoreFullWindow,
         }),
+        await PredefinedMenuItem.new({ item: 'Separator' }),
         await MenuItem.new({ text: '退出', action: () => void appExit() }),
       ],
     });
     await menu.popup(new LogicalPosition(event.clientX, event.clientY), getCurrentWebviewWindow());
   }
 
-  function cycleOverlayOpacity() {
-    const values = [30, 45, 60, 75];
-    overlayOpacity = values[(values.indexOf(overlayOpacity) + 1) % values.length];
+  function setOverlayOpacity(value: number) {
+    overlayOpacity = value;
     localStorage.setItem('pomotroid-overlay-opacity', String(overlayOpacity));
   }
 
   function restoreFullWindow() {
-    void setSetting('always_on_top', 'false');
+    cancelOverlayDrag();
+    void setSetting('mini_mode', 'false').catch((e) =>
+      logError(`[mini] restore failed: ${String(e)}`)
+    );
   }
 
   function toggleOverlayPositionLock() {
@@ -110,6 +172,17 @@
     };
     document.addEventListener('keydown', onEscape);
     cleanups.push(() => document.removeEventListener('keydown', onEscape));
+    document.addEventListener('pointermove', moveOverlayDrag);
+    document.addEventListener('pointerup', cancelOverlayDrag);
+    document.addEventListener('pointercancel', cancelOverlayDrag);
+    window.addEventListener('blur', cancelOverlayDrag);
+    cleanups.push(() => {
+      cancelOverlayDrag();
+      document.removeEventListener('pointermove', moveOverlayDrag);
+      document.removeEventListener('pointerup', cancelOverlayDrag);
+      document.removeEventListener('pointercancel', cancelOverlayDrag);
+      window.removeEventListener('blur', cancelOverlayDrag);
+    });
 
     // Async setup: hydrate state and register event listeners.
     (async () => {
@@ -180,81 +253,91 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       class="overlay-row"
-      data-tauri-drag-region
-      onmousedown={startOverlayDrag}
-      oncontextmenu={openOverlayMenu}
-      ondblclick={restoreFullWindow}
+      class:position-locked={overlayPositionLocked}
+      onpointerdown={startOverlayDrag}
+      oncontextmenu={(event) =>
+        void openOverlayMenu(event).catch((e) => logError(`[mini] menu failed: ${String(e)}`))}
+      ondblclick={handleOverlayDoubleClick}
       style="--overlay-opacity: {overlayOpacity}%"
       role="application"
-      aria-label="Timer overlay"
+      aria-label="迷你计时窗口"
+      title={overlayPositionLocked
+        ? '位置已锁定；双击恢复主窗口；右键打开菜单'
+        : '拖动时间或空白区域移动；双击恢复主窗口；右键打开菜单'}
     >
-      <div class="overlay-time">
+      <span
+        class="overlay-status"
+        style:background-color={roundColor(timerSnapshot.round_type)}
+        title={roundLabel(timerSnapshot.round_type)}
+        aria-label={roundLabel(timerSnapshot.round_type)}
+      ></span>
+      <div class="overlay-time" class:paused={timerSnapshot.is_paused}>
         <TimerDisplay state={timerSnapshot} />
       </div>
       <MiniControls />
     </div>
   {:else}
-  <div class="timer" style="zoom: {uiScale}">
-    <!-- Dial + display stacked (display centered over dial) -->
-    <div class="dial-stack">
-      <TimerDial snap={timerSnapshot} countdown={$settings.dial_countdown} />
-      <TimerDisplay state={timerSnapshot} />
-    </div>
+    <div class="timer" style="zoom: {uiScale}">
+      <!-- Dial + display stacked (display centered over dial) -->
+      <div class="dial-stack">
+        <TimerDial snap={timerSnapshot} countdown={$settings.dial_countdown} />
+        <TimerDisplay state={timerSnapshot} />
+      </div>
 
-    {#if !isCompact}
-      <!-- Round type label sits below the dial as a normal flex child so it
+      {#if !isCompact}
+        <!-- Round type label sits below the dial as a normal flex child so it
            does not affect the dial-stack height used to centre TimerDisplay. -->
-      <div class="round-label" style="color: {roundColor(timerSnapshot.round_type)}">
-        {roundLabel(timerSnapshot.round_type)}
-      </div>
+        <div class="round-label" style="color: {roundColor(timerSnapshot.round_type)}">
+          {roundLabel(timerSnapshot.round_type)}
+        </div>
 
-      <div class="controls-wrapper">
-        <!-- Back: restart current round -->
-        <Tooltip text={m.tooltip_restart_round()}>
-          <button class="btn-side" onclick={timerRestartRound} aria-label="Restart round">
-            <svg width="18" height="18" viewBox="0 0 16 16">
-              <polygon points="15,1 6,8 15,15" fill="currentColor" />
-              <rect x="1" y="1" width="3" height="14" rx="1" fill="currentColor" />
-            </svg>
+        <div class="controls-wrapper">
+          <!-- Back: restart current round -->
+          <Tooltip text={m.tooltip_restart_round()}>
+            <button class="btn-side" onclick={timerRestartRound} aria-label="Restart round">
+              <svg width="18" height="18" viewBox="0 0 16 16">
+                <polygon points="15,1 6,8 15,15" fill="currentColor" />
+                <rect x="1" y="1" width="3" height="14" rx="1" fill="currentColor" />
+              </svg>
+            </button>
+          </Tooltip>
+
+          <!-- Play / Pause — icon fades when state changes -->
+          <button
+            class="play-pause"
+            onclick={timerToggle}
+            aria-label={timerSnapshot.is_running ? 'Pause' : 'Play'}
+          >
+            {#key timerSnapshot.is_running}
+              <span class="icon" in:fade={{ duration: 120 }}>
+                {#if timerSnapshot.is_running}
+                  <svg width="24" height="24" viewBox="0 0 24 24">
+                    <rect x="5" y="3" width="5" height="18" rx="1.5" fill="currentColor" />
+                    <rect x="14" y="3" width="5" height="18" rx="1.5" fill="currentColor" />
+                  </svg>
+                {:else}
+                  <svg width="18" height="18" viewBox="0 0 24 24" style="overflow: visible;">
+                    <polygon points="4,0 28,12 4,24" fill="currentColor" />
+                  </svg>
+                {/if}
+              </span>
+            {/key}
           </button>
-        </Tooltip>
 
-        <!-- Play / Pause — icon fades when state changes -->
-        <button
-          class="play-pause"
-          onclick={timerToggle}
-          aria-label={timerSnapshot.is_running ? 'Pause' : 'Play'}
-        >
-          {#key timerSnapshot.is_running}
-            <span class="icon" in:fade={{ duration: 120 }}>
-              {#if timerSnapshot.is_running}
-                <svg width="24" height="24" viewBox="0 0 24 24">
-                  <rect x="5" y="3" width="5" height="18" rx="1.5" fill="currentColor" />
-                  <rect x="14" y="3" width="5" height="18" rx="1.5" fill="currentColor" />
-                </svg>
-              {:else}
-                <svg width="18" height="18" viewBox="0 0 24 24" style="overflow: visible;">
-                  <polygon points="4,0 28,12 4,24" fill="currentColor" />
-                </svg>
-              {/if}
-            </span>
-          {/key}
-        </button>
+          <!-- Skip: advance to next round -->
+          <Tooltip text={m.tooltip_skip()}>
+            <button class="btn-side" onclick={timerSkip} aria-label="Skip round">
+              <svg width="18" height="18" viewBox="0 0 16 16">
+                <polygon points="1,1 10,8 1,15" fill="currentColor" />
+                <rect x="12" y="1" width="3" height="14" rx="1" fill="currentColor" />
+              </svg>
+            </button>
+          </Tooltip>
 
-        <!-- Skip: advance to next round -->
-        <Tooltip text={m.tooltip_skip()}>
-          <button class="btn-side" onclick={timerSkip} aria-label="Skip round">
-            <svg width="18" height="18" viewBox="0 0 16 16">
-              <polygon points="1,1 10,8 1,15" fill="currentColor" />
-              <rect x="12" y="1" width="3" height="14" rx="1" fill="currentColor" />
-            </svg>
-          </button>
-        </Tooltip>
-
-        <TimerFooter snap={timerSnapshot} />
-      </div>
-    {/if}
-  </div>
+          <TimerFooter snap={timerSnapshot} />
+        </div>
+      {/if}
+    </div>
   {/if}
 
   {#if isCompact && !overlay}
@@ -293,8 +376,28 @@
     align-items: center;
     justify-content: center;
     gap: 4px;
-    background-color: color-mix(in srgb, var(--color-background) var(--overlay-opacity), transparent);
+    background-color: color-mix(
+      in srgb,
+      var(--color-background) var(--overlay-opacity),
+      transparent
+    );
     border-radius: 8px;
+    cursor: move;
+    touch-action: none;
+    overflow: hidden;
+  }
+
+  .overlay-row.position-locked {
+    cursor: default;
+  }
+  .overlay-status {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .overlay-time.paused {
+    opacity: 0.6;
   }
 
   .overlay-time :global(.time) {
@@ -314,7 +417,6 @@
   .overlay-row :global(.play-pause) {
     border-width: 1px;
   }
-
 
   .timer {
     display: flex;

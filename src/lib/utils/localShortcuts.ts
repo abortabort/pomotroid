@@ -92,6 +92,7 @@ export function createLocalShortcutHandler(state: LocalShortcutState): (e: Keybo
       }
     } else if (key === s.local_shortcut_fullscreen) {
       e.preventDefault();
+      if (s.mini_mode) return;
       const next = !state.getFullscreen();
       state.setFullscreen(next);
       getCurrentWebviewWindow().setFullscreen(next);

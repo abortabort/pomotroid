@@ -223,6 +223,13 @@
   <div class="group-heading">{m.system_group_window()}</div>
 
   <SettingsToggle
+    label="迷你窗口"
+    description="仅显示时间和控制按钮；独立于窗口置顶。"
+    checked={$settings.mini_mode}
+    onclick={() => toggle('mini_mode', $settings.mini_mode)}
+  />
+
+  <SettingsToggle
     label={m.system_toggle_aot()}
     description={m.system_toggle_aot_desc()}
     checked={$settings.always_on_top}

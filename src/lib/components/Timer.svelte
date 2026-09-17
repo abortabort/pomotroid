@@ -143,9 +143,9 @@
         await Submenu.new({
           text: '背景透明度',
           items: await Promise.all(
-            [25, 40, 55, 70].map((transparency) =>
+            [0, 25, 40, 55, 70].map((transparency) =>
               CheckMenuItem.new({
-                text: `${transparency}%`,
+                text: transparency === 0 ? '不透明' : `${transparency}%`,
                 checked: overlayOpacity === 100 - transparency,
                 action: () => setOverlayOpacity(100 - transparency),
               })
@@ -203,7 +203,7 @@
     const cleanups: UnlistenFn[] = [];
     loadOverlaySnapping();
     const savedOpacity = Number(localStorage.getItem('pomotroid-overlay-opacity'));
-    if ([30, 45, 60, 75].includes(savedOpacity)) overlayOpacity = savedOpacity;
+    if ([30, 45, 60, 75, 100].includes(savedOpacity)) overlayOpacity = savedOpacity;
     overlayPositionLocked = localStorage.getItem('pomotroid-overlay-position-locked') === 'true';
 
     const onEscape = (event: KeyboardEvent) => {

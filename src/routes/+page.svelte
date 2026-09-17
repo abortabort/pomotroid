@@ -76,10 +76,12 @@
       normalWindowSize = { width: window.innerWidth, height: window.innerHeight };
       appliedTopMode = true;
       void win.setResizable(false);
+      void win.setSkipTaskbar(true);
       void win.setSize(new LogicalSize(TOP_MODE_W, TOP_MODE_H));
     } else if (!topMode && appliedTopMode) {
       appliedTopMode = false;
       void win.setResizable(true);
+      void win.setSkipTaskbar(false);
       if (normalWindowSize) {
         void win.setSize(new LogicalSize(normalWindowSize.width, normalWindowSize.height));
       }

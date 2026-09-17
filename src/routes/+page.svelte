@@ -36,11 +36,14 @@
   let isCompact = $state(false);
   let normalWindowSize = $state<{ width: number; height: number } | null>(null);
   let appliedTopMode = $state(false);
+  let settingsLoaded = $state(false);
   let snapping = false;
+  let windowModeUpdates: Promise<void> = Promise.resolve();
 
   // A small, text-only overlay is easier to keep visible while working.
-  const TOP_MODE_W = 165;
-  const TOP_MODE_H = 38;
+  const TOP_MODE_W = 160;
+  const TOP_MODE_H = 30;
+  const NORMAL_SIZE_KEY = 'pomotroid-normal-window-size';
 
   // Extra bottom padding added to <main> in compact mode.  Shifts the
   // dial upward so the whitespace sits at the bottom rather than being
@@ -51,6 +54,9 @@
     function update() {
       const w = window.innerWidth;
       const h = window.innerHeight;
+      if (settingsLoaded && !$settings.always_on_top && !appliedTopMode && w > TOP_MODE_W && h > TOP_MODE_H) {
+        localStorage.setItem(NORMAL_SIZE_KEY, JSON.stringify({ width: w, height: h }));
+      }
       isCompact = w < COMPACT_THRESHOLD || h < COMPACT_THRESHOLD;
       if (isCompact) {
         // Scale so the dial fills the available space, reserving
@@ -69,24 +75,48 @@
 
   // Keep the always-on-top view compact without losing the user's normal size.
   $effect(() => {
+    if (!settingsLoaded) return;
     const topMode = $settings.always_on_top;
     const win = getCurrentWebviewWindow();
+    let requestedSize: { width: number; height: number };
 
     if (topMode && !appliedTopMode) {
-      normalWindowSize = { width: window.innerWidth, height: window.innerHeight };
+      try {
+        const saved = JSON.parse(localStorage.getItem(NORMAL_SIZE_KEY) ?? 'null');
+        if (saved?.width > TOP_MODE_W && saved?.height > TOP_MODE_H) {
+          normalWindowSize = { width: saved.width, height: saved.height };
+        }
+      } catch {
+        // Fall back to the current size when no valid normal size is saved.
+      }
+      normalWindowSize ??= { width: 360, height: 478 };
       appliedTopMode = true;
-      void win.setResizable(false);
-      void win.setSkipTaskbar(true);
-      void win.setSize(new LogicalSize(TOP_MODE_W, TOP_MODE_H));
+      requestedSize = { width: TOP_MODE_W, height: TOP_MODE_H };
     } else if (!topMode && appliedTopMode) {
       appliedTopMode = false;
-      void win.setResizable(true);
-      void win.setSkipTaskbar(false);
-      if (normalWindowSize) {
-        void win.setSize(new LogicalSize(normalWindowSize.width, normalWindowSize.height));
-      }
+      requestedSize = normalWindowSize ?? { width: BASE_W, height: BASE_H };
       normalWindowSize = null;
+    } else {
+      return;
     }
+
+    // Serialize native operations so rapid mode switches cannot restore an old size.
+    windowModeUpdates = windowModeUpdates.then(async () => {
+      if (topMode) {
+        await win.setFullscreen(false);
+        if (await win.isMaximized()) await win.unmaximize();
+      }
+      await win.setSize(new LogicalSize(requestedSize.width, requestedSize.height));
+      await win.setResizable(!topMode);
+      await win.setSkipTaskbar(topMode);
+      const actual = (await win.innerSize()).toLogical(await win.scaleFactor());
+      await info(`[main] window mode=${topMode ? 'overlay' : 'normal'} requested=${requestedSize.width}x${requestedSize.height} actual=${actual.width}x${actual.height}`);
+      if (Math.abs(actual.width - requestedSize.width) > 1 || Math.abs(actual.height - requestedSize.height) > 1) {
+        await logError(`[main] window size mismatch: requested=${requestedSize.width}x${requestedSize.height} actual=${actual.width}x${actual.height}`);
+      }
+    }).catch(async (e) => {
+      await logError(`[main] failed to apply window mode: ${String(e)}`);
+    });
   });
 
   async function startResize(direction: string) {
@@ -153,6 +183,7 @@
         // Load settings from backend.
         const s = await getSettings();
         settings.set(s);
+        settingsLoaded = true;
         localVolume = s.volume;
 
         // Apply the stored locale on mount.

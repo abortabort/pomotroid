@@ -37,6 +37,8 @@
   let { isCompact = false, uiScale = 1, overlay = false }: Props = $props();
 
   let timerSnapshot = $derived($timerState);
+  let overlayOpacity = $state(45);
+  let overlayPositionLocked = $state(false);
 
   function roundColor(rt: string): string {
     if (rt === 'work') return 'var(--color-focus-round)';
@@ -52,7 +54,10 @@
 
   function startOverlayDrag(event: MouseEvent) {
     const target = event.target;
-    if (target instanceof Element && target.closest('button')) return;
+    if (
+      overlayPositionLocked ||
+      (target instanceof Element && target.closest('button'))
+    ) return;
     void getCurrentWebviewWindow().startDragging();
   }
 
@@ -61,6 +66,14 @@
     const menu = await Menu.new({
       items: [
         await MenuItem.new({ text: '重置', action: () => timerRestartRound() }),
+        await MenuItem.new({
+          text: `透明度：${overlayOpacity}%`,
+          action: () => cycleOverlayOpacity(),
+        }),
+        await MenuItem.new({
+          text: overlayPositionLocked ? '解锁位置' : '锁定位置',
+          action: () => toggleOverlayPositionLock(),
+        }),
         await MenuItem.new({
           text: '显示完整窗口',
           action: () => void setSetting('always_on_top', 'false'),
@@ -71,8 +84,32 @@
     await menu.popup(new LogicalPosition(event.clientX, event.clientY), getCurrentWebviewWindow());
   }
 
+  function cycleOverlayOpacity() {
+    const values = [30, 45, 60, 75];
+    overlayOpacity = values[(values.indexOf(overlayOpacity) + 1) % values.length];
+    localStorage.setItem('pomotroid-overlay-opacity', String(overlayOpacity));
+  }
+
+  function restoreFullWindow() {
+    void setSetting('always_on_top', 'false');
+  }
+
+  function toggleOverlayPositionLock() {
+    overlayPositionLocked = !overlayPositionLocked;
+    localStorage.setItem('pomotroid-overlay-position-locked', String(overlayPositionLocked));
+  }
+
   onMount(() => {
     const cleanups: UnlistenFn[] = [];
+    const savedOpacity = Number(localStorage.getItem('pomotroid-overlay-opacity'));
+    if ([30, 45, 60, 75].includes(savedOpacity)) overlayOpacity = savedOpacity;
+    overlayPositionLocked = localStorage.getItem('pomotroid-overlay-position-locked') === 'true';
+
+    const onEscape = (event: KeyboardEvent) => {
+      if (overlay && event.key === 'Escape') restoreFullWindow();
+    };
+    document.addEventListener('keydown', onEscape);
+    cleanups.push(() => document.removeEventListener('keydown', onEscape));
 
     // Async setup: hydrate state and register event listeners.
     (async () => {
@@ -146,6 +183,8 @@
       data-tauri-drag-region
       onmousedown={startOverlayDrag}
       oncontextmenu={openOverlayMenu}
+      ondblclick={restoreFullWindow}
+      style="--overlay-opacity: {overlayOpacity}%"
       role="application"
       aria-label="Timer overlay"
     >
@@ -240,31 +279,26 @@
 
   .overlay-time {
     position: relative;
-    width: 126px;
-    height: 58px;
+    width: 86px;
+    height: 22px;
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
   .overlay-row {
-    width: calc(100% - 8px);
-    height: calc(100% - 8px);
+    width: calc(100% - 4px);
+    height: calc(100% - 4px);
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 4px;
-    background-color: color-mix(in srgb, var(--color-background) 45%, transparent);
+    background-color: color-mix(in srgb, var(--color-background) var(--overlay-opacity), transparent);
     border-radius: 8px;
   }
 
-  .overlay-time {
-    width: 86px;
-    height: 48px;
-  }
-
   .overlay-time :global(.time) {
-    font-size: 1.1rem;
+    font-size: 1rem;
   }
 
   .overlay-row :global(.mini-controls) {
@@ -273,8 +307,8 @@
 
   .overlay-row :global(.btn-side),
   .overlay-row :global(.play-pause) {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
   }
 
   .overlay-row :global(.play-pause) {

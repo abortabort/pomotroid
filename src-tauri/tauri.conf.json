@@ -16,7 +16,7 @@
         "width": 360,
         "height": 478,
         "minWidth": 160,
-        "minHeight": 36,
+        "minHeight": 30,
         "resizable": true,
         "decorations": true,
         "transparent": true,

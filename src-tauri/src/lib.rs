@@ -30,7 +30,7 @@ use commands::{
     stats_get_detailed, stats_get_heatmap,
     themes_list,
     timer_get_state, timer_reset, timer_restart_round, timer_skip, timer_toggle,
-    window_set_visibility,
+    window_set_visibility, app_exit,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -386,6 +386,7 @@ pub fn run() {
             stats_get_heatmap,
             // Window
             window_set_visibility,
+            app_exit,
             // Shortcuts
             shortcuts_reload,
             // Audio

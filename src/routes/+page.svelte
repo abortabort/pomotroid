@@ -13,6 +13,8 @@
   import type { UnlistenFn } from '@tauri-apps/api/event';
   import { info, error as logError } from '@tauri-apps/plugin-log';
   import { createLocalShortcutHandler } from '$lib/utils/localShortcuts';
+  import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
+  import { currentMonitor } from '@tauri-apps/api/window';
 
   // Local shortcut state — volume and fullscreen tracked separately so the
   // handler can read current values without waiting for settings:changed round-trip.
@@ -32,6 +34,13 @@
 
   let uiScale = $state(1.0);
   let isCompact = $state(false);
+  let normalWindowSize = $state<{ width: number; height: number } | null>(null);
+  let appliedTopMode = $state(false);
+  let snapping = false;
+
+  // A small, text-only overlay is easier to keep visible while working.
+  const TOP_MODE_W = 165;
+  const TOP_MODE_H = 38;
 
   // Extra bottom padding added to <main> in compact mode.  Shifts the
   // dial upward so the whitespace sits at the bottom rather than being
@@ -58,6 +67,26 @@
     return () => window.removeEventListener('resize', update);
   });
 
+  // Keep the always-on-top view compact without losing the user's normal size.
+  $effect(() => {
+    const topMode = $settings.always_on_top;
+    const win = getCurrentWebviewWindow();
+
+    if (topMode && !appliedTopMode) {
+      normalWindowSize = { width: window.innerWidth, height: window.innerHeight };
+      appliedTopMode = true;
+      void win.setResizable(false);
+      void win.setSize(new LogicalSize(TOP_MODE_W, TOP_MODE_H));
+    } else if (!topMode && appliedTopMode) {
+      appliedTopMode = false;
+      void win.setResizable(true);
+      if (normalWindowSize) {
+        void win.setSize(new LogicalSize(normalWindowSize.width, normalWindowSize.height));
+      }
+      normalWindowSize = null;
+    }
+  });
+
   async function startResize(direction: string) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await getCurrentWebviewWindow().startResizeDragging(direction as any);
@@ -65,6 +94,7 @@
 
   onMount(() => {
     const cleanups: UnlistenFn[] = [];
+    const win = getCurrentWebviewWindow();
 
     // Mount local keyboard shortcut handler.
     const shortcutHandler = createLocalShortcutHandler({
@@ -86,6 +116,37 @@
     cleanups.push(() => document.removeEventListener('keydown', shortcutHandler));
 
     (async () => {
+      // Magnetically attach the fixed-size overlay to the nearest monitor edge.
+      cleanups.push(
+        await win.onMoved(async ({ payload: position }) => {
+          if (!$settings.always_on_top || snapping) return;
+          const monitor = await currentMonitor();
+          if (!monitor) return;
+
+          const size = await win.outerSize();
+          const threshold = 16;
+          const right = position.x + size.width;
+          const bottom = position.y + size.height;
+          const monitorRight = monitor.position.x + monitor.size.width;
+          const monitorBottom = monitor.position.y + monitor.size.height;
+          let x = position.x;
+          let y = position.y;
+
+          if (Math.abs(position.x - monitor.position.x) <= threshold) x = monitor.position.x;
+          else if (Math.abs(right - monitorRight) <= threshold) x = monitorRight - size.width;
+          if (Math.abs(position.y - monitor.position.y) <= threshold) y = monitor.position.y;
+          else if (Math.abs(bottom - monitorBottom) <= threshold) y = monitorBottom - size.height;
+
+          if (x !== position.x || y !== position.y) {
+            snapping = true;
+            await win.setPosition(new PhysicalPosition(x, y));
+            setTimeout(() => {
+              snapping = false;
+            }, 100);
+          }
+        })
+      );
+
       try {
         // Load settings from backend.
         const s = await getSettings();
@@ -179,10 +240,12 @@
   <div class="rh rh-sw" onmousedown={() => startResize('SouthWest')} role="none"></div>
 {/if}
 
-<div class="app">
-  <Titlebar />
+<div class="app" class:top-mode={$settings.always_on_top}>
+  {#if !$settings.always_on_top}
+    <Titlebar />
+  {/if}
   <main class:compact={isCompact}>
-    <Timer {isCompact} {uiScale} />
+    <Timer {isCompact} {uiScale} overlay={$settings.always_on_top} />
   </main>
 </div>
 
@@ -207,6 +270,19 @@
   main.compact {
     /* Bottom padding provides breathing room below the mini controls. */
     padding-bottom: 8px;
+  }
+
+  .top-mode main {
+    padding: 0;
+  }
+
+  .top-mode {
+    background-color: transparent;
+  }
+
+  :global(html:has(.top-mode)),
+  :global(body:has(.top-mode)) {
+    background-color: transparent;
   }
 
   /* ---------------------------------------------------------------------------

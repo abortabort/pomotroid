@@ -398,6 +398,12 @@ pub fn window_set_visibility(visible: bool, app: AppHandle) -> Result<(), String
     Ok(())
 }
 
+/// Exit the application immediately, including when close-to-tray is enabled.
+#[tauri::command]
+pub fn app_exit(app: AppHandle) {
+    app.exit(0);
+}
+
 // ---------------------------------------------------------------------------
 // CMD-07 — Audio commands
 // ---------------------------------------------------------------------------

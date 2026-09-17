@@ -23,16 +23,20 @@
   import Tooltip from './Tooltip.svelte';
   import type { UnlistenFn } from '@tauri-apps/api/event';
   import * as m from '$paraglide/messages.js';
-  import { notificationShow } from '$lib/ipc';
+  import { notificationShow, appExit, setSetting } from '$lib/ipc';
+  import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
+  import { Menu, MenuItem } from '@tauri-apps/api/menu';
+  import { LogicalPosition } from '@tauri-apps/api/dpi';
 
   interface Props {
     isCompact?: boolean;
     uiScale?: number;
+    overlay?: boolean;
   }
 
-  let { isCompact = false, uiScale = 1 }: Props = $props();
+  let { isCompact = false, uiScale = 1, overlay = false }: Props = $props();
 
-  let state = $derived($timerState);
+  let timerSnapshot = $derived($timerState);
 
   function roundColor(rt: string): string {
     if (rt === 'work') return 'var(--color-focus-round)';
@@ -44,6 +48,27 @@
     if (rt === 'work') return m.round_label_work();
     if (rt === 'short-break') return m.round_label_short_break();
     return m.round_label_long_break();
+  }
+
+  function startOverlayDrag(event: MouseEvent) {
+    const target = event.target;
+    if (target instanceof Element && target.closest('button')) return;
+    void getCurrentWebviewWindow().startDragging();
+  }
+
+  async function openOverlayMenu(event: MouseEvent) {
+    event.preventDefault();
+    const menu = await Menu.new({
+      items: [
+        await MenuItem.new({ text: '重置', action: () => timerRestartRound() }),
+        await MenuItem.new({
+          text: '显示完整窗口',
+          action: () => void setSetting('always_on_top', 'false'),
+        }),
+        await MenuItem.new({ text: '退出', action: () => void appExit() }),
+      ],
+    });
+    await menu.popup(new LogicalPosition(event.clientX, event.clientY), getCurrentWebviewWindow());
   }
 
   onMount(() => {
@@ -113,19 +138,35 @@
   });
 </script>
 
-<div class="timer-outer" class:compact={isCompact}>
+<div class="timer-outer" class:compact={isCompact} class:overlay>
+  {#if overlay}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+    <div
+      class="overlay-row"
+      data-tauri-drag-region
+      onmousedown={startOverlayDrag}
+      oncontextmenu={openOverlayMenu}
+      role="application"
+      aria-label="Timer overlay"
+    >
+      <div class="overlay-time">
+        <TimerDisplay state={timerSnapshot} />
+      </div>
+      <MiniControls />
+    </div>
+  {:else}
   <div class="timer" style="zoom: {uiScale}">
     <!-- Dial + display stacked (display centered over dial) -->
     <div class="dial-stack">
-      <TimerDial snap={state} countdown={$settings.dial_countdown} />
-      <TimerDisplay {state} />
+      <TimerDial snap={timerSnapshot} countdown={$settings.dial_countdown} />
+      <TimerDisplay state={timerSnapshot} />
     </div>
 
     {#if !isCompact}
       <!-- Round type label sits below the dial as a normal flex child so it
            does not affect the dial-stack height used to centre TimerDisplay. -->
-      <div class="round-label" style="color: {roundColor(state.round_type)}">
-        {roundLabel(state.round_type)}
+      <div class="round-label" style="color: {roundColor(timerSnapshot.round_type)}">
+        {roundLabel(timerSnapshot.round_type)}
       </div>
 
       <div class="controls-wrapper">
@@ -143,11 +184,11 @@
         <button
           class="play-pause"
           onclick={timerToggle}
-          aria-label={state.is_running ? 'Pause' : 'Play'}
+          aria-label={timerSnapshot.is_running ? 'Pause' : 'Play'}
         >
-          {#key state.is_running}
+          {#key timerSnapshot.is_running}
             <span class="icon" in:fade={{ duration: 120 }}>
-              {#if state.is_running}
+              {#if timerSnapshot.is_running}
                 <svg width="24" height="24" viewBox="0 0 24 24">
                   <rect x="5" y="3" width="5" height="18" rx="1.5" fill="currentColor" />
                   <rect x="14" y="3" width="5" height="18" rx="1.5" fill="currentColor" />
@@ -171,12 +212,13 @@
           </button>
         </Tooltip>
 
-        <TimerFooter snap={state} />
+        <TimerFooter snap={timerSnapshot} />
       </div>
     {/if}
   </div>
+  {/if}
 
-  {#if isCompact}
+  {#if isCompact && !overlay}
     <MiniControls />
   {/if}
 </div>
@@ -188,6 +230,57 @@
     align-items: center;
     gap: 8px;
   }
+
+  .timer-outer.overlay {
+    width: 100%;
+    height: 100%;
+    justify-content: center;
+    cursor: move;
+  }
+
+  .overlay-time {
+    position: relative;
+    width: 126px;
+    height: 58px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .overlay-row {
+    width: calc(100% - 8px);
+    height: calc(100% - 8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    background-color: color-mix(in srgb, var(--color-background) 45%, transparent);
+    border-radius: 8px;
+  }
+
+  .overlay-time {
+    width: 86px;
+    height: 48px;
+  }
+
+  .overlay-time :global(.time) {
+    font-size: 1.1rem;
+  }
+
+  .overlay-row :global(.mini-controls) {
+    gap: 2px;
+  }
+
+  .overlay-row :global(.btn-side),
+  .overlay-row :global(.play-pause) {
+    width: 18px;
+    height: 18px;
+  }
+
+  .overlay-row :global(.play-pause) {
+    border-width: 1px;
+  }
+
 
   .timer {
     display: flex;

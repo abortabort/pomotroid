@@ -12,9 +12,14 @@
     onTimerResumed,
     onRoundChange,
     onTimerReset,
+    onTimerStarted,
+    onTimerCompleted,
   } from '$lib/ipc';
   import { timerState } from '$lib/stores/timer';
   import { settings } from '$lib/stores/settings';
+  import { overlaySnapEnabled, loadOverlaySnapping, setOverlaySnapping } from '$lib/stores/overlay';
+  import { timerPhase } from '$lib/utils/timerPhase';
+  import type { RoundType } from '$lib/types';
   import { fade } from 'svelte/transition';
   import TimerDial from './TimerDial.svelte';
   import TimerDisplay from './TimerDisplay.svelte';
@@ -33,15 +38,21 @@
     isCompact?: boolean;
     uiScale?: number;
     overlay?: boolean;
+    onResetPosition?: () => Promise<void>;
   }
 
-  let { isCompact = false, uiScale = 1, overlay = false }: Props = $props();
+  let { isCompact = false, uiScale = 1, overlay = false, onResetPosition }: Props = $props();
 
   let timerSnapshot = $derived($timerState);
   let overlayOpacity = $state(45);
   let overlayPositionLocked = $state(false);
   let pendingDrag: { x: number; y: number; pointer: number; element: HTMLElement } | null = null;
   let lastDragAt = -Infinity;
+  let completedRound = $state<RoundType | null>(null);
+  let completedTimer: ReturnType<typeof setTimeout> | undefined;
+  const phaseLabels = { idle: '未启动', running: '运行中', paused: '已暂停', completed: '已完成' };
+  let currentPhase = $derived(timerPhase(timerSnapshot));
+  let indicatorPhase = $derived(completedRound ? 'completed' : currentPhase);
 
   function roundColor(rt: string): string {
     if (rt === 'work') return 'var(--color-focus-round)';
@@ -105,6 +116,20 @@
     cancelOverlayDrag();
     const menu = await Menu.new({
       items: [
+        await MenuItem.new({
+          text: `${roundLabel(timerSnapshot.round_type)} · ${timerSnapshot.work_round_number}/${timerSnapshot.work_rounds_total}`,
+          enabled: false,
+        }),
+        await MenuItem.new({ text: `状态：${phaseLabels[currentPhase]}`, enabled: false }),
+        ...(completedRound
+          ? [
+              await MenuItem.new({
+                text: `上一轮已完成：${roundLabel(completedRound)}`,
+                enabled: false,
+              }),
+            ]
+          : []),
+        await PredefinedMenuItem.new({ item: 'Separator' }),
         await MenuItem.new({ text: '重置当前轮次', action: () => timerRestartRound() }),
         await PredefinedMenuItem.new({ item: 'Separator' }),
         await CheckMenuItem.new({
@@ -131,6 +156,19 @@
           text: '锁定位置',
           checked: overlayPositionLocked,
           action: () => toggleOverlayPositionLock(),
+        }),
+        await CheckMenuItem.new({
+          text: '边缘磁吸',
+          checked: $overlaySnapEnabled,
+          action: () => setOverlaySnapping(!$overlaySnapEnabled),
+        }),
+        await MenuItem.new({
+          text: '重置窗口位置',
+          enabled: !overlayPositionLocked && !!onResetPosition,
+          action: () =>
+            void onResetPosition?.().catch((e) =>
+              logError(`[mini] position reset failed: ${String(e)}`)
+            ),
         }),
         await PredefinedMenuItem.new({ item: 'Separator' }),
         await MenuItem.new({
@@ -163,6 +201,7 @@
 
   onMount(() => {
     const cleanups: UnlistenFn[] = [];
+    loadOverlaySnapping();
     const savedOpacity = Number(localStorage.getItem('pomotroid-overlay-opacity'));
     if ([30, 45, 60, 75].includes(savedOpacity)) overlayOpacity = savedOpacity;
     overlayPositionLocked = localStorage.getItem('pomotroid-overlay-position-locked') === 'true';
@@ -190,6 +229,23 @@
       timerState.set(initial);
 
       cleanups.push(
+        await onTimerStarted(({ total_secs }) => {
+          timerState.update((s) => ({
+            ...s,
+            elapsed_secs: 0,
+            total_secs,
+            is_running: true,
+            is_paused: false,
+          }));
+        }),
+        await onTimerCompleted(({ round_type, skipped }) => {
+          clearTimeout(completedTimer);
+          completedRound = skipped ? null : round_type;
+          if (!skipped)
+            completedTimer = setTimeout(() => {
+              completedRound = null;
+            }, 2000);
+        }),
         await onTimerTick(({ elapsed_secs, total_secs }) => {
           timerState.update((s) => ({
             ...s,
@@ -237,12 +293,15 @@
           }
         }),
         await onTimerReset((snap) => {
+          clearTimeout(completedTimer);
+          completedRound = null;
           timerState.set(snap);
         })
       );
     })();
 
     return () => {
+      clearTimeout(completedTimer);
       for (const unlisten of cleanups) unlisten();
     };
   });
@@ -261,17 +320,32 @@
       style="--overlay-opacity: {overlayOpacity}%"
       role="application"
       aria-label="迷你计时窗口"
-      title={overlayPositionLocked
-        ? '位置已锁定；双击恢复主窗口；右键打开菜单'
-        : '拖动时间或空白区域移动；双击恢复主窗口；右键打开菜单'}
     >
       <span
         class="overlay-status"
-        style:background-color={roundColor(timerSnapshot.round_type)}
-        title={roundLabel(timerSnapshot.round_type)}
-        aria-label={roundLabel(timerSnapshot.round_type)}
-      ></span>
-      <div class="overlay-time" class:paused={timerSnapshot.is_paused}>
+        class:idle={indicatorPhase === 'idle'}
+        class:running={indicatorPhase === 'running'}
+        style="--status-color: {roundColor(completedRound ?? timerSnapshot.round_type)}"
+        aria-label={completedRound
+          ? `上一轮已完成：${roundLabel(completedRound)}`
+          : `${roundLabel(timerSnapshot.round_type)}：${phaseLabels[currentPhase]}`}
+      >
+        {#if indicatorPhase === 'paused'}
+          <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+            <rect x="1" y="1" width="2" height="6" fill="currentColor" />
+            <rect x="5" y="1" width="2" height="6" fill="currentColor" />
+          </svg>
+        {:else if indicatorPhase === 'completed'}
+          <svg width="8" height="8" viewBox="0 0 8 8" aria-hidden="true">
+            <path d="M1 4 L3 6 L7 2" fill="none" stroke="currentColor" stroke-width="1.5" />
+          </svg>
+        {/if}
+      </span>
+      <div
+        class="overlay-time"
+        class:paused={currentPhase === 'paused'}
+        class:idle={currentPhase === 'idle'}
+      >
         <TimerDisplay state={timerSnapshot} />
       </div>
       <MiniControls />
@@ -391,10 +465,23 @@
     cursor: default;
   }
   .overlay-status {
-    width: 5px;
-    height: 5px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--status-color);
+  }
+  .overlay-status.running {
+    background: var(--status-color);
+  }
+  .overlay-status.idle {
+    box-shadow: inset 0 0 0 1px var(--status-color);
+  }
+  .overlay-time.idle {
+    opacity: 0.75;
   }
   .overlay-time.paused {
     opacity: 0.6;

@@ -12,6 +12,7 @@
     miniTaskbarReady,
   } from '$lib/ipc';
   import { settings } from '$lib/stores/settings';
+  import { overlaySnapEnabled } from '$lib/stores/overlay';
   import { applyTheme } from '$lib/stores/theme';
   import { resolveThemeName } from '$lib/utils/theme';
   import { isMac } from '$lib/utils/platform';
@@ -133,6 +134,36 @@
       Math.min(geometry.y, area.position.y + Math.max(0, area.size.height - size.height))
     );
     await win.setPosition(new PhysicalPosition(x, y));
+  }
+
+  function resetMiniPosition(): Promise<void> {
+    const operation = windowModeUpdates.then(async () => {
+      if (!$settings.mini_mode || appliedMiniMode !== true) return;
+      changingMode = true;
+      geometryRevision++;
+      clearTimeout(geometryTimer);
+      try {
+        const win = getCurrentWebviewWindow();
+        const monitor = (await currentMonitor()) ?? (await availableMonitors())[0];
+        if (!monitor) return;
+        const area = monitor.workArea;
+        const size = await win.outerSize();
+        const margin = 16 * monitor.scaleFactor;
+        await win.setPosition(
+          new PhysicalPosition(
+            area.position.x + Math.max(0, area.size.width - size.width - margin),
+            area.position.y + Math.min(margin, Math.max(0, area.size.height - size.height))
+          )
+        );
+        await saveGeometry(true, true);
+      } finally {
+        changingMode = false;
+      }
+    });
+    windowModeUpdates = operation.catch(async (e) => {
+      await logError(`[main] position reset failed: ${String(e)}`);
+    });
+    return operation;
   }
 
   // Extra bottom padding added to <main> in compact mode.  Shifts the
@@ -275,7 +306,7 @@
         await win.onResized(() => scheduleGeometrySave()),
         await win.onMoved(async ({ payload: position }) => {
           scheduleGeometrySave();
-          if (!$settings.mini_mode || changingMode || snapping) return;
+          if (!$settings.mini_mode || !$overlaySnapEnabled || changingMode || snapping) return;
           const revision = geometryRevision;
           const monitor = await currentMonitor();
           if (!monitor) return;
@@ -296,12 +327,21 @@
           else if (Math.abs(bottom - monitorBottom) <= threshold) y = monitorBottom - size.height;
 
           if (x !== position.x || y !== position.y) {
-            if (changingMode || revision !== geometryRevision || !$settings.mini_mode) return;
+            if (
+              changingMode ||
+              revision !== geometryRevision ||
+              !$settings.mini_mode ||
+              !$overlaySnapEnabled
+            )
+              return;
             snapping = true;
-            await win.setPosition(new PhysicalPosition(x, y));
-            setTimeout(() => {
-              snapping = false;
-            }, 100);
+            try {
+              await win.setPosition(new PhysicalPosition(x, y));
+            } finally {
+              setTimeout(() => {
+                snapping = false;
+              }, 100);
+            }
           }
         })
       );
@@ -408,7 +448,12 @@
     <Titlebar />
   {/if}
   <main class:compact={isCompact}>
-    <Timer {isCompact} {uiScale} overlay={$settings.mini_mode} />
+    <Timer
+      {isCompact}
+      {uiScale}
+      overlay={$settings.mini_mode}
+      onResetPosition={resetMiniPosition}
+    />
   </main>
 </div>
 

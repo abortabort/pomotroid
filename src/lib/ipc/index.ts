@@ -12,14 +12,17 @@ import type {
   DetailedStats,
   HeatmapStats,
   UpdateInfo,
+  RoundType,
 } from '$lib/types';
+import { createActionGuard } from '$lib/utils/actionGuard';
 
 // --- Timer commands ---
 
 export const timerToggle = () => invoke<void>('timer_toggle');
 export const timerReset = () => invoke<void>('timer_reset');
-export const timerRestartRound = () => invoke<void>('timer_restart_round');
-export const timerSkip = () => invoke<void>('timer_skip');
+const roundActionGuard = createActionGuard();
+export const timerRestartRound = () => roundActionGuard(() => invoke<void>('timer_restart_round'));
+export const timerSkip = () => roundActionGuard(() => invoke<void>('timer_skip'));
 export const getTimerState = () => invoke<TimerState>('timer_get_state');
 
 // --- Settings commands ---
@@ -111,6 +114,15 @@ export const onTimerTick = (
   cb: (payload: { elapsed_secs: number; total_secs: number }) => void
 ): Promise<UnlistenFn> =>
   listen<{ elapsed_secs: number; total_secs: number }>('timer:tick', (e) => cb(e.payload));
+
+export const onTimerStarted = (
+  cb: (payload: { total_secs: number }) => void
+): Promise<UnlistenFn> => listen<{ total_secs: number }>('timer:started', (e) => cb(e.payload));
+
+export const onTimerCompleted = (
+  cb: (payload: { round_type: RoundType; skipped: boolean }) => void
+): Promise<UnlistenFn> =>
+  listen<{ round_type: RoundType; skipped: boolean }>('timer:completed', (e) => cb(e.payload));
 
 export const onTimerPaused = (
   cb: (payload: { elapsed_secs: number }) => void

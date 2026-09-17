@@ -190,7 +190,6 @@
   <div class="controls">
     <button
       class="btn-icon"
-      title="切换到迷你窗口"
       aria-label="切换到迷你窗口"
       onclick={() => void setSetting('mini_mode', 'true')}
     >

@@ -306,6 +306,10 @@ fn listen_events(
                 log::info!(
                     "[timer] round complete type={completed_round} skipped={was_skipped}"
                 );
+                let _ = app.emit("timer:completed", serde_json::json!({
+                    "round_type": completed_round,
+                    "skipped": was_skipped,
+                }));
 
                 // --- Session recording: mark the completed round ---
                 if let Some(session_id) = current_session_id.take() {

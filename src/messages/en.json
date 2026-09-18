@@ -1,4 +1,9 @@
 {
+  "reminder_visual": "Visual reminders",
+  "reminder_visual_desc": "Flash the timer when a round ends, even when sound is muted.",
+  "reminder_preview": "Preview reminder",
+  "reminder_time_up": "Time's up",
+  "reminder_preview_error": "Could not preview the timer. Please try again.",
   "settings_title": "Settings",
   "nav_timer": "Timer",
   "nav_appearance": "Appearance",

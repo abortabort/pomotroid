@@ -21,6 +21,7 @@ pub struct Settings {
     pub min_to_tray: bool,
     pub min_to_tray_on_close: bool,
     pub notifications_enabled: bool,
+    pub visual_reminders_enabled: bool,
     /// Number of work rounds before a long break.
     pub long_break_interval: u32,
     pub short_breaks_enabled: bool,
@@ -80,6 +81,7 @@ impl Default for Settings {
             min_to_tray: false,
             min_to_tray_on_close: false,
             notifications_enabled: false,
+            visual_reminders_enabled: true,
             long_break_interval: 4,
             short_breaks_enabled: true,
             long_breaks_enabled: true,
@@ -195,6 +197,7 @@ pub fn load(conn: &Connection) -> Result<Settings> {
         min_to_tray: parse_bool(&map, "min_to_tray", d.min_to_tray),
         min_to_tray_on_close: parse_bool(&map, "min_to_tray_on_close", d.min_to_tray_on_close),
         notifications_enabled: parse_bool(&map, "notifications", d.notifications_enabled),
+        visual_reminders_enabled: parse_bool(&map, "visual_reminders", d.visual_reminders_enabled),
         long_break_interval: parse_u32(&map, "work_rounds", d.long_break_interval),
         short_breaks_enabled: parse_bool(&map, "short_breaks_enabled", d.short_breaks_enabled),
         long_breaks_enabled: parse_bool(&map, "long_breaks_enabled", d.long_breaks_enabled),
@@ -361,6 +364,16 @@ mod tests {
         seed_defaults(&conn).unwrap();
         let s = load(&conn).unwrap();
         assert!(s.always_on_top, "seed_defaults must not overwrite saved value");
+    }
+
+    #[test]
+    fn visual_reminder_preference_survives_seeding() {
+        let conn = setup();
+        seed_defaults(&conn).unwrap();
+        assert!(load(&conn).unwrap().visual_reminders_enabled);
+        save_setting(&conn, "visual_reminders", "false").unwrap();
+        seed_defaults(&conn).unwrap();
+        assert!(!load(&conn).unwrap().visual_reminders_enabled);
     }
 
     #[test]

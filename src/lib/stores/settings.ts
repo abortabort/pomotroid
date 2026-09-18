@@ -17,6 +17,7 @@ const defaults: Settings = {
   min_to_tray: false,
   min_to_tray_on_close: false,
   notifications_enabled: false,
+  visual_reminders_enabled: true,
   always_on_top: false,
   mini_mode: false,
   break_always_on_top: false,

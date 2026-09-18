@@ -27,6 +27,7 @@
   import MiniControls from './MiniControls.svelte';
   import Tooltip from './Tooltip.svelte';
   import type { UnlistenFn } from '@tauri-apps/api/event';
+  import { listen } from '@tauri-apps/api/event';
   import * as m from '$paraglide/messages.js';
   import { notificationShow, appExit, setSetting } from '$lib/ipc';
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
@@ -56,7 +57,8 @@
   let currentPhase = $derived(timerPhase(timerSnapshot));
   let indicatorPhase = $derived(completedRound ? 'completed' : currentPhase);
 
-  function triggerReminder() {
+  function triggerReminder(preview = false) {
+    if (!preview && !$settings.visual_reminders_enabled) return;
     clearTimeout(reminderTimer);
     reminderPulse = true;
     reminderTimer = setTimeout(() => {
@@ -239,6 +241,7 @@
       timerState.set(initial);
 
       cleanups.push(
+        await listen('reminder:preview', () => triggerReminder(true)),
         await onTimerStarted(({ total_secs }) => {
           timerState.update((s) => ({
             ...s,
@@ -324,7 +327,7 @@
 
 <div class="timer-outer" class:compact={isCompact} class:overlay class:reminder-pulse={reminderPulse}>
   {#if reminderPulse && !overlay}
-    <span class="reminder-badge" role="status" aria-live="assertive">时间到</span>
+    <span class="reminder-badge" role="status" aria-live="assertive">{m.reminder_time_up()}</span>
   {/if}
   {#if overlay}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->

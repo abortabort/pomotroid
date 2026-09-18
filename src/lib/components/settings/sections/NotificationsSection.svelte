@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { emitTo } from '@tauri-apps/api/event';
   import { settings } from '$lib/stores/settings';
   import {
     setSetting,
@@ -15,6 +16,21 @@
   import { warn, error as logError } from '@tauri-apps/plugin-log';
 
   type CueKey = keyof CustomAudioInfo;
+  let previewing = $state(false);
+  let previewError = $state('');
+  let previewTimer: ReturnType<typeof setTimeout> | undefined;
+
+  async function previewReminder() {
+    if (previewing) return;
+    previewing = true;
+    previewError = '';
+    previewTimer = setTimeout(() => { previewing = false; }, 4200);
+    try { await emitTo('main', 'reminder:preview'); }
+    catch (error) {
+      previewError = m.reminder_preview_error();
+      void logError(`[reminder] preview failed: ${error}`);
+    }
+  }
 
   const CUE_LIST: { id: CueKey; label: () => string }[] = [
     { id: 'work_alert', label: m.notif_alert_work },
@@ -76,7 +92,7 @@
       await refreshAudioInfo();
       unlisten = await onSettingsChanged(refreshAudioInfo);
     })();
-    return () => unlisten?.();
+    return () => { clearTimeout(previewTimer); unlisten?.(); };
   });
 
   async function toggle(dbKey: string, current: boolean) {
@@ -156,6 +172,19 @@
     onclick={() => toggle('notifications', $settings.notifications_enabled)}
   />
 
+  <div class="group-heading">{m.reminder_visual()}</div>
+  <SettingsToggle
+    label={m.reminder_visual()}
+    description={m.reminder_visual_desc()}
+    checked={$settings.visual_reminders_enabled}
+    onclick={() => toggle('visual_reminders', $settings.visual_reminders_enabled)}
+  />
+  <div class="preview-row">
+    <span class="preview-timer" class:previewing role="status">{previewing ? m.reminder_time_up() : '25:00'}</span>
+    <button class="btn-choose" disabled={previewing} onclick={previewReminder}>{m.reminder_preview()}</button>
+  </div>
+  {#if previewError}<p class="audio-error" role="alert">{previewError}</p>{/if}
+
   <div class="group-heading">{m.notif_group_tick()}</div>
 
   <SettingsToggle
@@ -194,6 +223,11 @@
 </div>
 
 <style>
+  .preview-row { display:flex; align-items:center; justify-content:space-between; padding:12px 20px; border-bottom:1px solid var(--color-separator); }
+  .preview-timer { display:flex; align-items:center; justify-content:center; width:160px; height:30px; border-radius:8px; background:var(--color-background); color:var(--color-foreground); font-size:.85rem; }
+  .previewing { animation: reminder-preview .7s ease-in-out 4; }
+  @keyframes reminder-preview { 0%,100% { filter:none; } 50% { filter:brightness(1.6); } }
+  button:disabled { opacity:.5; cursor:default; }
   .section {
     display: flex;
     flex-direction: column;

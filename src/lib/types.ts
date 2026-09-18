@@ -30,6 +30,7 @@ export interface Settings {
   min_to_tray: boolean;
   min_to_tray_on_close: boolean;
   notifications_enabled: boolean;
+  visual_reminders_enabled: boolean;
   always_on_top: boolean;
   mini_mode: boolean;
   break_always_on_top: boolean;

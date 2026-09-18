@@ -14,6 +14,7 @@ pub const DEFAULTS: &[(&str, &str)] = &[
     ("min_to_tray", "false"),
     ("min_to_tray_on_close", "false"),
     ("notifications", "false"),
+    ("visual_reminders", "true"),
     ("work_rounds", "4"),
     ("dial_countdown", "true"),
     ("theme_mode", "auto"),

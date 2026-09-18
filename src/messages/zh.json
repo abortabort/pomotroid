@@ -1,4 +1,9 @@
 {
+  "reminder_visual": "视觉提醒",
+  "reminder_visual_desc": "轮次结束时闪烁计时器，静音时也可提醒。",
+  "reminder_preview": "预览提醒",
+  "reminder_time_up": "时间到",
+  "reminder_preview_error": "无法预览计时器，请重试。",
   "settings_title": "设置",
   "nav_timer": "计时器",
   "nav_appearance": "外观",

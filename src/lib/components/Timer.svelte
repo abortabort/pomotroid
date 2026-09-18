@@ -50,9 +50,19 @@
   let lastDragAt = -Infinity;
   let completedRound = $state<RoundType | null>(null);
   let completedTimer: ReturnType<typeof setTimeout> | undefined;
+  let reminderPulse = $state(false);
+  let reminderTimer: ReturnType<typeof setTimeout> | undefined;
   const phaseLabels = { idle: '未启动', running: '运行中', paused: '已暂停', completed: '已完成' };
   let currentPhase = $derived(timerPhase(timerSnapshot));
   let indicatorPhase = $derived(completedRound ? 'completed' : currentPhase);
+
+  function triggerReminder() {
+    clearTimeout(reminderTimer);
+    reminderPulse = true;
+    reminderTimer = setTimeout(() => {
+      reminderPulse = false;
+    }, 4200);
+  }
 
   function roundColor(rt: string): string {
     if (rt === 'work') return 'var(--color-focus-round)';
@@ -241,10 +251,12 @@
         await onTimerCompleted(({ round_type, skipped }) => {
           clearTimeout(completedTimer);
           completedRound = skipped ? null : round_type;
-          if (!skipped)
+          if (!skipped) {
+            triggerReminder();
             completedTimer = setTimeout(() => {
               completedRound = null;
             }, 2000);
+          }
         }),
         await onTimerTick(({ elapsed_secs, total_secs }) => {
           timerState.update((s) => ({
@@ -294,6 +306,8 @@
         }),
         await onTimerReset((snap) => {
           clearTimeout(completedTimer);
+          clearTimeout(reminderTimer);
+          reminderPulse = false;
           completedRound = null;
           timerState.set(snap);
         })
@@ -302,12 +316,16 @@
 
     return () => {
       clearTimeout(completedTimer);
+      clearTimeout(reminderTimer);
       for (const unlisten of cleanups) unlisten();
     };
   });
 </script>
 
-<div class="timer-outer" class:compact={isCompact} class:overlay>
+<div class="timer-outer" class:compact={isCompact} class:overlay class:reminder-pulse={reminderPulse}>
+  {#if reminderPulse && !overlay}
+    <span class="reminder-badge" role="status" aria-live="assertive">时间到</span>
+  {/if}
   {#if overlay}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
@@ -425,6 +443,31 @@
     flex-direction: column;
     align-items: center;
     gap: 8px;
+    position: relative;
+  }
+
+  .reminder-badge {
+    position: absolute;
+    top: -18px;
+    z-index: 3;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--color-accent);
+    color: var(--color-background);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    pointer-events: none;
+  }
+
+  .reminder-pulse .dial-stack,
+  .reminder-pulse .overlay-row {
+    animation: reminder-flash 0.7s ease-in-out 4;
+  }
+
+  @keyframes reminder-flash {
+    0%, 100% { filter: none; }
+    50% { filter: brightness(1.6); }
   }
 
   .timer-outer.overlay {
@@ -444,8 +487,8 @@
   }
 
   .overlay-row {
-    width: calc(100% - 4px);
-    height: calc(100% - 4px);
+    width: 100%;
+    height: 100%;
     display: flex;
     align-items: center;
     justify-content: center;

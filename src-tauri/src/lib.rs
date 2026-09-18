@@ -196,6 +196,12 @@ pub fn run() {
             #[cfg(not(target_os = "macos"))]
             let _ = main_window.set_decorations(false);
 
+            // Windows shadows add a native 1px white edge to undecorated windows.
+            #[cfg(target_os = "windows")]
+            if let Err(error) = main_window.set_shadow(false) {
+                log::warn!("[main] failed to disable native shadow: {error}");
+            }
+
             // Enable macOS window tiling/arrangement.
             //
             // Two things are required for the full native experience:

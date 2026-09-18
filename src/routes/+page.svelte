@@ -15,7 +15,7 @@
   import { overlaySnapEnabled } from '$lib/stores/overlay';
   import { applyTheme } from '$lib/stores/theme';
   import { resolveThemeName } from '$lib/utils/theme';
-  import { isMac } from '$lib/utils/platform';
+  import { isMac, isWindows } from '$lib/utils/platform';
   import { setLocale } from '$lib/locale.svelte.js';
   import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
   import type { UnlistenFn } from '@tauri-apps/api/event';
@@ -239,6 +239,8 @@
         }
         await win.setResizable(!mini);
         await win.setMaximizable(!mini);
+        // Style changes can refresh the native frame; suppress its white edge again.
+        if (isWindows) await win.setShadow(false);
         await win.setSkipTaskbar(mini && (await miniTaskbarReady()));
         if (saved) await restorePosition(saved);
         else

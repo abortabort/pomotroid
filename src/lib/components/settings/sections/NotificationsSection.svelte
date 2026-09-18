@@ -27,6 +27,8 @@
     previewTimer = setTimeout(() => { previewing = false; }, 4200);
     try { await emitTo('main', 'reminder:preview'); }
     catch (error) {
+      clearTimeout(previewTimer);
+      previewing = false;
       previewError = m.reminder_preview_error();
       void logError(`[reminder] preview failed: ${error}`);
     }
@@ -87,12 +89,21 @@
   }
 
   onMount(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     (async () => {
       await refreshAudioInfo();
+      if (disposed) return;
       unlisten = await onSettingsChanged(refreshAudioInfo);
-    })();
-    return () => { clearTimeout(previewTimer); unlisten?.(); };
+      if (disposed) unlisten();
+    })().catch((error) => {
+      void logError(`[notifications] listener setup failed: ${error}`);
+    });
+    return () => {
+      disposed = true;
+      clearTimeout(previewTimer);
+      unlisten?.();
+    };
   });
 
   async function toggle(dbKey: string, current: boolean) {
@@ -223,10 +234,16 @@
 </div>
 
 <style>
-  .preview-row { display:flex; align-items:center; justify-content:space-between; padding:12px 20px; border-bottom:1px solid var(--color-separator); }
+  .preview-row { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:12px 20px; border-bottom:1px solid var(--color-separator); }
   .preview-timer { display:flex; align-items:center; justify-content:center; width:160px; height:30px; border-radius:8px; background:var(--color-background); color:var(--color-foreground); font-size:.85rem; }
   .previewing { animation: reminder-preview .7s ease-in-out 4; }
   @keyframes reminder-preview { 0%,100% { filter:none; } 50% { filter:brightness(1.6); } }
+  @media (prefers-reduced-motion: reduce) {
+    .previewing {
+      animation: none;
+      box-shadow: inset 0 0 0 2px var(--color-accent);
+    }
+  }
   button:disabled { opacity:.5; cursor:default; }
   .section {
     display: flex;

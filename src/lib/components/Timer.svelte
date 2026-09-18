@@ -473,6 +473,14 @@
     50% { filter: brightness(1.6); }
   }
 
+  @media (prefers-reduced-motion: reduce) {
+    .reminder-pulse .dial-stack,
+    .reminder-pulse .overlay-row {
+      animation: none;
+      box-shadow: inset 0 0 0 2px var(--color-accent);
+    }
+  }
+
   .timer-outer.overlay {
     width: 100%;
     height: 100%;
